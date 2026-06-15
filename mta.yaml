@@ -1,0 +1,136 @@
+_schema-version: '3.1'
+ID: training_batch_cap
+version: 1.0.0
+description: "A simple CAP project."
+parameters:
+  enable-parallel-deployments: true
+build-parameters:
+  before-all:
+    - builder: custom
+      commands:
+        - npm install --production
+        - npx cds build --production
+
+modules:
+  - name: training_batch-srv
+    type: nodejs
+    path: gen/srv
+    parameters:
+      buildpack: nodejs_buildpack
+    build-parameters:
+      builder: npm-ci
+    provides:
+      - name: srv-api
+        properties:
+          srv-url: ${default-url}
+    requires:
+      - name: training_batch-db
+      - name: training_batch-xsuaa
+
+  - name: training_batch-db-deployer
+    type: hdb
+    path: gen/db
+    parameters:
+      buildpack: nodejs_buildpack
+    requires:
+      - name: training_batch-db
+
+  - name: training_batch_ui
+    type: html5
+    path: app/training-ui
+    build-parameters:
+      build-result: dist
+      builder: custom
+      commands:
+        - npm install
+        - npm run build:cf
+      supported-platforms: []
+
+  - name: training_batch_ui_deployer
+    type: com.sap.application.content
+    path: .
+    requires:
+      - name: training_batch_html5_host
+        parameters:
+          content-target: true
+    build-parameters:
+      build-result: resources
+      requires:
+        - artifacts:
+            - training_batch_ui.zip
+          name: training_batch_ui
+          target-path: resources/
+
+  - name: training_batch_destination_content
+    type: com.sap.application.content
+    requires:
+      - name: training_batch_xsuaa
+        parameters:
+          service-key:
+            name: training_batch_xsuaa_key
+      - name: training_batch_html5_host
+        parameters:
+          service-key:
+            name: training_batch_html5_host_key
+      - name: training_batch_destination
+        parameters:
+          content-target: true
+    build-parameters:
+      no-source: true
+    parameters:
+      content:
+        instance:
+          existing_destinations_policy: update
+          destinations:
+            - Name: training_batch_html5_dest
+              ServiceInstanceName: training_batch_html5_host
+              ServiceKeyName: training_batch_html5_host_key
+              sap.cloud.service: cnma.training.batch
+            - Name: training_batch_xsuaa_dest
+              Authentication: OAuth2UserTokenExchange
+              ServiceInstanceName: training_batch_xsuaa
+              ServiceKeyName: training_batch_xsuaa_key
+              sap.cloud.service: cnma.training.batch
+
+resources:
+  - name: training_batch-db
+    type: com.sap.xs.hdi-container
+    parameters:
+      service: hana
+      service-plan: hdi-shared
+
+  - name: training_batch_xsuaa
+    type: org.cloudfoundry.managed-service
+    parameters:
+      config:
+        tenant-mode: dedicated
+        xsappname: training_batch-${space}
+      path: ./xs-security.json
+      service: xsuaa
+      service-plan: application
+
+  - name: training_batch_html5_host
+    type: org.cloudfoundry.managed-service
+    parameters:
+      service: html5-apps-repo
+      service-plan: app-host
+
+  - name: training_batch_destination
+    type: org.cloudfoundry.managed-service
+    parameters:
+      service: destination
+      service-plan: lite
+      config:
+        HTML5Runtime_enabled: true
+        init_data:
+          instance:
+            existing_destinations_policy: ignore
+            destinations:
+              - Name: srv-api
+                Description: Backend API
+                Authentication: NoAuthentication
+                ProxyType: Internet
+                Type: HTTP
+                URL: ~{srv-api/srv-url}
+                HTML5.DynamicDestination: true
+                HTML5.ForwardAuthToken: true
